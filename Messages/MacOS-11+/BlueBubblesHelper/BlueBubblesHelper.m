@@ -62,6 +62,14 @@
 - (NSString*)_methodDescription;
 @end
 
+// ChatKit's Recently Deleted API (Ventura+); resolved at runtime because ChatKit
+// is loaded by Messages, not linked by this bundle.
+@interface NSObject (BBRecoverableChatDelete)
++ (id)sharedConversationList;
+- (id)conversationForExistingChatWithGUID:(id)arg0;
+- (void)recoverableDeleteForConversations:(id)arg0 deleteDate:(id)arg1 synchronousQuery:(BOOL)arg2 completionHandler:(id)arg3;
+@end
+
 BlueBubblesHelper *plugin;
 NSMutableArray* vettedAliases;
 
@@ -163,6 +171,95 @@ NSMutableArray* vettedAliases;
 }
 
 // Run when receiving a new message from the tcp socket
++(void) sendRecoverableDeleteError:(NSString *)error transaction:(NSString *)transaction {
+    NSMutableDictionary *response = [@{@"error": error} mutableCopy];
+    if (transaction != nil) {
+        response[@"transactionId"] = transaction;
+    }
+    [[NetworkController sharedInstance] sendMessage:response];
+}
+
++(void) recoverablyDeleteChatWithGuid:(NSString *)chatGuid transaction:(NSString *)transaction {
+    // Exactly one response per request. Every response is sent from the main queue,
+    // so this flag needs no further synchronization.
+    __block BOOL responded = NO;
+    void (^respond)(NSString *) = ^(NSString *error) {
+        if (responded) return;
+        responded = YES;
+        if (error != nil) {
+            [BlueBubblesHelper sendRecoverableDeleteError:error transaction:transaction];
+        } else if (transaction != nil) {
+            [[NetworkController sharedInstance] sendMessage:@{@"transactionId": transaction}];
+        }
+    };
+
+    // ChatKit conversation-list mutations are UI operations; always perform them on the main queue.
+    void (^deleteConversation)(void) = ^{
+        if (![chatGuid isKindOfClass:[NSString class]] || chatGuid.length == 0) {
+            respond(@"Provide a chat GUID! (chatGuid parameter missing)");
+            return;
+        }
+
+        @try {
+            Class conversationListClass = NSClassFromString(@"CKConversationList");
+            SEL sharedListSelector = @selector(sharedConversationList);
+            SEL lookupSelector = @selector(conversationForExistingChatWithGUID:);
+            SEL recoverableDeleteSelector = @selector(recoverableDeleteForConversations:deleteDate:synchronousQuery:completionHandler:);
+
+            if (conversationListClass == Nil ||
+                ![conversationListClass respondsToSelector:sharedListSelector]) {
+                respond(@"Recoverable chat deletion is unavailable: CKConversationList is not available");
+                return;
+            }
+
+            id conversationList = [conversationListClass sharedConversationList];
+            if (conversationList == nil ||
+                ![conversationList respondsToSelector:lookupSelector] ||
+                ![conversationList respondsToSelector:recoverableDeleteSelector]) {
+                respond(@"Recoverable chat deletion is unavailable on this version of Messages");
+                return;
+            }
+
+            id conversation = [conversationList conversationForExistingChatWithGUID:chatGuid];
+            if (conversation == nil) {
+                respond(@"Chat does not exist in CKConversationList!");
+                return;
+            }
+
+            // Ventura's private header exposes the completion handler as id. A no-argument
+            // block avoids guessing undocumented result parameters; reaching it is the
+            // native API's completion signal. Extra caller-supplied arguments are ignored.
+            void (^completionHandler)(void) = ^{
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    DLog("BLUEBUBBLESHELPER: Recoverably deleted chat %{public}@", chatGuid);
+                    respond(nil);
+                });
+            };
+
+            // If ChatKit never calls back, report that instead of leaving the request hanging.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                respond(@"Recoverable chat deletion did not confirm within 30 seconds; check Recently Deleted");
+            });
+
+            NSDate *deleteDate = [NSDate date];
+            [conversationList recoverableDeleteForConversations:@[conversation]
+                                                     deleteDate:deleteDate
+                                               synchronousQuery:NO
+                                              completionHandler:completionHandler];
+        } @catch (NSException *exception) {
+            DLog("BLUEBUBBLESHELPER: Recoverable chat deletion failed for %{public}@: %{public}@", chatGuid, exception);
+            respond([NSString stringWithFormat:@"Recoverable chat deletion failed: %@",
+                     exception.reason ?: exception.name]);
+        }
+    };
+
+    if ([NSThread isMainThread]) {
+        deleteConversation();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), deleteConversation);
+    }
+}
+
 -(void) handleMessage: (NetworkController*)controller  message:(NSString *)message {
     // The data is in the form of a json string, so we need to convert it to a NSDictionary
     // for some reason the data is sometimes duplicated, so account for that
@@ -428,6 +525,9 @@ NSMutableArray* vettedAliases;
         NSMutableDictionary *mutableData = [[NSMutableDictionary alloc] initWithDictionary:data];
         [mutableData setValue:[chat guid] forKey:@"chatGuid"];
         [BlueBubblesHelper sendMessage:(mutableData) transfers:nil attributedString:nil transaction:(transaction)];
+    // If server tells us to move a chat to Recently Deleted
+    } else if ([event isEqualToString:@"recoverable-delete-chat"]) {
+        [BlueBubblesHelper recoverablyDeleteChatWithGuid:data[@"chatGuid"] transaction:transaction];
     // If server tells us to delete a chat
     } else if ([event isEqualToString:@"delete-chat"]) {
         IMChat *chat = [BlueBubblesHelper getChat: data[@"chatGuid"] :transaction];
