@@ -504,7 +504,7 @@
 				EXECUTABLE_PREFIX = "";
 				FRAMEWORK_SEARCH_PATHS = "$(inherited)";
 				INFOPLIST_FILE = "$(SRCROOT)/BlueBubblesHelper/Info.plist";
-				INSTALL_PATH = /Users/tanay/Desktop/test;
+				INSTALL_PATH = /usr/local/lib;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -541,7 +541,7 @@
 					"$(inherited)",
 					"$(SYSTEM_LIBRARY_DIR)/PrivateFrameworks",
 				);
-				SYSTEM_HEADER_SEARCH_PATHS = "/Users/tanay/StudioProjects/bluebubbles-helper/Messages/MacOS-11+/BlueBubblesHelper";
+				SYSTEM_HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/BlueBubblesHelper";
 			};
 			name = Debug;
 		};
@@ -570,7 +570,7 @@
 				EXECUTABLE_PREFIX = "";
 				FRAMEWORK_SEARCH_PATHS = "$(inherited)";
 				INFOPLIST_FILE = "$(SRCROOT)/BlueBubblesHelper/Info.plist";
-				INSTALL_PATH = /Users/tanay/Desktop/test;
+				INSTALL_PATH = /usr/local/lib;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -604,7 +604,7 @@
 					"$(inherited)",
 					"$(SYSTEM_LIBRARY_DIR)/PrivateFrameworks",
 				);
-				SYSTEM_HEADER_SEARCH_PATHS = "/Users/tanay/StudioProjects/bluebubbles-helper/Messages/MacOS-11+/BlueBubblesHelper";
+				SYSTEM_HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/BlueBubblesHelper";
 			};
 			name = Release;
 		};
