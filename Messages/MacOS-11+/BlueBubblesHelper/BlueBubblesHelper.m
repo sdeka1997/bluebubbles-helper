@@ -933,6 +933,54 @@ NSMutableArray* vettedAliases;
     return imChat;
 }
 
+// Retreive the IMChat instance to send a message to
+//
+// Tries the chat guid first. If this Mac doesn't know that guid (e.g. its chat.db was reset),
+// falls back to the group ID, which Apple keeps stable across devices, then (1:1 chats only)
+// to the participant's handle on the given service, the same way create-chat does.
+// Group chats are never resolved from their participants, since that could start a new group.
++(IMChat *) getChatForSend: (NSDictionary *) data :(NSString *) transaction {
+    IMChat *chat = [BlueBubblesHelper getChat: data[@"chatGuid"] :nil];
+    if (chat != nil) {
+        return chat;
+    }
+
+    NSString *guid = data[@"chatGuid"];
+    NSString *groupId = data[@"groupId"];
+    NSArray *participants = data[@"participants"];
+    NSString *service = data[@"service"];
+    @try {
+        IMChatRegistry *registry = [IMChatRegistry sharedInstance];
+        if ([groupId isKindOfClass:[NSString class]] && [groupId length] != 0 && [registry respondsToSelector:@selector(existingChatWithGroupID:)]) {
+            chat = [registry existingChatWithGroupID:groupId];
+        }
+
+        if (chat == nil && [guid isKindOfClass:[NSString class]] && [guid containsString:@";-;"]
+            && [participants isKindOfClass:[NSArray class]] && [participants count] == 1
+            && [participants[0] isKindOfClass:[NSString class]] && [service isKindOfClass:[NSString class]]) {
+            IMHandle *handle;
+            if ([service isEqualToString:@"iMessage"]) {
+                handle = [[[IMAccountController sharedInstance] activeIMessageAccount] imHandleWithID:(participants[0])];
+            } else {
+                handle = [[[IMAccountController sharedInstance] activeSMSAccount] imHandleWithID:(participants[0])];
+            }
+            if (handle != nil) {
+                chat = [registry chatForIMHandle:(handle)];
+            }
+        }
+    } @catch (NSException *exception) {
+        DLog("BLUEBUBBLESHELPER: Chat fallback lookup failed: %{public}@", exception.reason);
+        chat = nil;
+    }
+
+    if (chat != nil) {
+        DLog("BLUEBUBBLESHELPER: Resolved %{public}@ to %{public}@", guid, [chat guid]);
+    } else if (transaction != nil) {
+        [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"Chat does not exist!"}];
+    }
+    return chat;
+}
+
 +(long long) parseReactionType:(NSString *)reactionType {
     NSString *lowerCaseType = [reactionType lowercaseString];
 
@@ -1082,7 +1130,7 @@ NSMutableArray* vettedAliases;
 
 
 +(void) sendMessage: (NSDictionary *) data transfers: (NSArray *) transfers attributedString:(NSMutableAttributedString *) attributedString transaction:(NSString *) transaction {
-    IMChat *chat = [BlueBubblesHelper getChat: data[@"chatGuid"] :transaction];
+    IMChat *chat = [BlueBubblesHelper getChatForSend: data :transaction];
     if (chat == nil) {
         DLog("BLUEBUBBLESHELPER: chat is null, aborting");
         return;
