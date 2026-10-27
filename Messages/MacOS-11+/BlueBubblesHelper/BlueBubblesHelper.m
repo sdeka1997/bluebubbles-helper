@@ -950,6 +950,8 @@ NSMutableArray* vettedAliases;
     if([@"-laugh" isEqualToString:(lowerCaseType)]) return 3003;
     if([@"-emphasize" isEqualToString:(lowerCaseType)]) return 3004;
     if([@"-question" isEqualToString:(lowerCaseType)]) return 3005;
+    if([@"emoji" isEqualToString:(lowerCaseType)]) return 2006;
+    if([@"-emoji" isEqualToString:(lowerCaseType)]) return 3006;
     return 0;
 }
 
@@ -969,6 +971,53 @@ NSMutableArray* vettedAliases;
     if([@"-emphasize" isEqualToString:(lowerCaseType)]) return @"Removed an exclamation from ";
     if([@"-question" isEqualToString:(lowerCaseType)]) return @"Removed a question mark from ";
     return @"";
+}
+
++(NSString *) reactionToVerb:(NSString *)reactionType emoji:(NSString *)emoji {
+    NSString *lowerCaseType = [reactionType lowercaseString];
+    if([@"emoji" isEqualToString:lowerCaseType]) {
+        return [NSString stringWithFormat:@"Reacted %@ to ", emoji];
+    }
+    if([@"-emoji" isEqualToString:lowerCaseType]) {
+        return [NSString stringWithFormat:@"Removed %@ from ", emoji];
+    }
+    return [self reactionToVerb:reactionType];
+}
+
++(IMMessage *) emojiTapbackMessage:(NSAttributedString *)message
+             associatedMessageGUID:(NSString *)associatedMessageGuid
+             associatedMessageType:(long long)reaction
+            associatedMessageRange:(NSRange)range
+            associatedMessageEmoji:(NSString *)emoji
+                 messageSummaryInfo:(NSDictionary *)summaryInfo {
+    Class messageClass = NSClassFromString(@"IMMessage");
+    SEL selector = NSSelectorFromString(@"instantMessageWithAssociatedMessageContent:associatedMessageGUID:associatedMessageType:associatedMessageRange:associatedMessageEmoji:messageSummaryInfo:threadIdentifier:");
+    if (messageClass == Nil || ![messageClass respondsToSelector:selector]) {
+        return nil;
+    }
+
+    NSMethodSignature *signature = [messageClass methodSignatureForSelector:selector];
+    if (signature == nil) {
+        return nil;
+    }
+
+    NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
+    NSString *threadIdentifier = nil;
+    [invocation setSelector:selector];
+    [invocation setTarget:messageClass];
+    [invocation setArgument:&message atIndex:2];
+    [invocation setArgument:&associatedMessageGuid atIndex:3];
+    [invocation setArgument:&reaction atIndex:4];
+    [invocation setArgument:&range atIndex:5];
+    [invocation setArgument:&emoji atIndex:6];
+    [invocation setArgument:&summaryInfo atIndex:7];
+    [invocation setArgument:&threadIdentifier atIndex:8];
+    [invocation retainArguments];
+    [invocation invoke];
+
+    __unsafe_unretained IMMessage *result = nil;
+    [invocation getReturnValue:&result];
+    return result;
 }
 
 +(void) getMessageItem:(IMChat *)chat :(NSString *)actionMessageGuid completionBlock:(void (^)(IMMessage *message))block {
@@ -1118,11 +1167,24 @@ NSMutableArray* vettedAliases;
         ddScan = [data[@"ddScan"] integerValue] == 1;
     }
 
-    void (^createMessage)(NSAttributedString*, NSAttributedString*, NSString*, NSString*, NSString*, long long*, NSRange, NSDictionary*, NSArray*, BOOL, BOOL) = ^(NSAttributedString *message, NSAttributedString *subject, NSString *effectId, NSString *threadIdentifier, NSString *associatedMessageGuid, long long *reaction, NSRange range, NSDictionary *summaryInfo, NSArray *transferGUIDs, BOOL isAudioMessage, BOOL ddScan) {
+    void (^createMessage)(NSAttributedString*, NSAttributedString*, NSString*, NSString*, NSString*, long long*, NSRange, NSDictionary*, NSString*, NSArray*, BOOL, BOOL) = ^(NSAttributedString *message, NSAttributedString *subject, NSString *effectId, NSString *threadIdentifier, NSString *associatedMessageGuid, long long *reaction, NSRange range, NSDictionary *summaryInfo, NSString *reactionEmoji, NSArray *transferGUIDs, BOOL isAudioMessage, BOOL ddScan) {
         IMMessage *messageToSend = [[IMMessage alloc] init];
         if (reaction == nil) {
             messageToSend = [messageToSend initWithSender:(nil) time:(nil) text:(message) messageSubject:(subject) fileTransferGUIDs:(transferGUIDs) flags:(isAudioMessage ? 0x300005 : (subject ? 0x10000d : 0x100005)) error:(nil) guid:(nil) subject:(nil) balloonBundleID:(nil) payloadData:(nil) expressiveSendStyleID:(effectId)];
             messageToSend.threadIdentifier = threadIdentifier;
+        } else if (reactionEmoji != nil) {
+            messageToSend = [BlueBubblesHelper emojiTapbackMessage:message
+                                             associatedMessageGUID:associatedMessageGuid
+                                             associatedMessageType:*(reaction)
+                                            associatedMessageRange:range
+                                            associatedMessageEmoji:reactionEmoji
+                                                 messageSummaryInfo:summaryInfo];
+            if (messageToSend == nil) {
+                if (transaction != nil) {
+                    [[NetworkController sharedInstance] sendMessage:@{@"transactionId": transaction, @"error": @"Emoji Tapbacks are unavailable on this macOS version."}];
+                }
+                return;
+            }
         } else {
             messageToSend = [messageToSend initWithSender:(nil) time:(nil) text:(message) messageSubject:(subject) fileTransferGUIDs:(nil) flags:(0x5) error:(nil) guid:(nil) subject:(nil) associatedMessageGUID:(associatedMessageGuid) associatedMessageType:*(reaction) associatedMessageRange:(range) messageSummaryInfo:(summaryInfo)];
         }
@@ -1186,6 +1248,17 @@ NSMutableArray* vettedAliases;
             if (data[@"reactionType"] != [NSNull null] && [data[@"reactionType"] length] != 0) {
                 NSString *reaction = data[@"reactionType"];
                 long long reactionLong = [BlueBubblesHelper parseReactionType:(reaction)];
+                NSString *reactionEmoji = nil;
+                if (reactionLong == 2006 || reactionLong == 3006) {
+                    reactionEmoji = data[@"reactionEmoji"];
+                    if (reactionEmoji == nil || reactionEmoji == (id)[NSNull null] || reactionEmoji.length == 0) {
+                        if (transaction != nil) {
+                            [[NetworkController sharedInstance] sendMessage:@{@"transactionId": transaction, @"error": @"Provide an emoji for a custom reaction."}];
+                        }
+                        return;
+                    }
+                }
+                NSString *reactionVerb = [BlueBubblesHelper reactionToVerb:reaction emoji:reactionEmoji];
                 NSDictionary *messageSummary;
                 if (item != nil) {
                     NSAttributedString *text = [item text];
@@ -1198,14 +1271,14 @@ NSMutableArray* vettedAliases;
                     NSData *dataenc = [text.string dataUsingEncoding:NSNonLossyASCIIStringEncoding];
                     NSString *encodevalue = [[NSString alloc]initWithData:dataenc encoding:NSUTF8StringEncoding];
                     if ([encodevalue isEqualToString:@"\\ufffc"]) {
-                        NSMutableAttributedString *newAttributedString = [[NSMutableAttributedString alloc] initWithString: [[BlueBubblesHelper reactionToVerb:(reaction)] stringByAppendingString:(@"an attachment")]];
-                        createMessage(newAttributedString, subjectAttributedString, effectId, nil, [NSString stringWithFormat:@"p:%@/%@", data[@"partIndex"], [message guid]], &reactionLong, [item messagePartRange], @{}, nil, false, ddScan);
+                        NSMutableAttributedString *newAttributedString = [[NSMutableAttributedString alloc] initWithString: [reactionVerb stringByAppendingString:(@"an attachment")]];
+                        createMessage(newAttributedString, subjectAttributedString, effectId, nil, [NSString stringWithFormat:@"p:%@/%@", data[@"partIndex"], [message guid]], &reactionLong, [item messagePartRange], @{}, reactionEmoji, nil, false, ddScan);
                     } else {
-                        NSMutableAttributedString *newAttributedString = [[NSMutableAttributedString alloc] initWithString: [[BlueBubblesHelper reactionToVerb:(reaction)] stringByAppendingString:([NSString stringWithFormat:(@"“%@”"), text.string])]];
+                        NSMutableAttributedString *newAttributedString = [[NSMutableAttributedString alloc] initWithString: [reactionVerb stringByAppendingString:([NSString stringWithFormat:(@"“%@”"), text.string])]];
                         if ([item text] == nil) {
-                            createMessage(newAttributedString, subjectAttributedString, effectId, nil, [NSString stringWithFormat:@"bp:%@", [message guid]], &reactionLong, [item messagePartRange], messageSummary, nil, false, ddScan);
+                            createMessage(newAttributedString, subjectAttributedString, effectId, nil, [NSString stringWithFormat:@"bp:%@", [message guid]], &reactionLong, [item messagePartRange], messageSummary, reactionEmoji, nil, false, ddScan);
                         } else {
-                            createMessage(newAttributedString, subjectAttributedString, effectId, nil, [NSString stringWithFormat:@"p:%@/%@", data[@"partIndex"], [message guid]], &reactionLong, [item messagePartRange], messageSummary, nil, false, ddScan);
+                            createMessage(newAttributedString, subjectAttributedString, effectId, nil, [NSString stringWithFormat:@"p:%@/%@", data[@"partIndex"], [message guid]], &reactionLong, [item messagePartRange], messageSummary, reactionEmoji, nil, false, ddScan);
                         }
                     }
                 } else {
@@ -1216,11 +1289,11 @@ NSMutableArray* vettedAliases;
                     NSString *encodevalue = [[NSString alloc]initWithData:dataenc encoding:NSUTF8StringEncoding];
                     NSRange range = NSMakeRange(0, [message text].string.length);
                     if ([encodevalue isEqualToString:@"\\ufffc"] || [encodevalue length] == 0) {
-                        NSMutableAttributedString *newAttributedString = [[NSMutableAttributedString alloc] initWithString: [[BlueBubblesHelper reactionToVerb:(reaction)] stringByAppendingString:(@"an attachment")]];
-                        createMessage(newAttributedString, subjectAttributedString, effectId, nil, [message guid], &reactionLong, range, @{}, nil, false, ddScan);
+                        NSMutableAttributedString *newAttributedString = [[NSMutableAttributedString alloc] initWithString: [reactionVerb stringByAppendingString:(@"an attachment")]];
+                        createMessage(newAttributedString, subjectAttributedString, effectId, nil, [message guid], &reactionLong, range, @{}, reactionEmoji, nil, false, ddScan);
                     } else {
-                        NSMutableAttributedString *newAttributedString = [[NSMutableAttributedString alloc] initWithString: [[BlueBubblesHelper reactionToVerb:(reaction)] stringByAppendingString:([NSString stringWithFormat:(@"“%@”"), [message text].string])]];
-                        createMessage(newAttributedString, subjectAttributedString, effectId, nil, [message guid], &reactionLong, range, messageSummary, nil, false, ddScan);
+                        NSMutableAttributedString *newAttributedString = [[NSMutableAttributedString alloc] initWithString: [reactionVerb stringByAppendingString:([NSString stringWithFormat:(@"“%@”"), [message text].string])]];
+                        createMessage(newAttributedString, subjectAttributedString, effectId, nil, [message guid], &reactionLong, range, messageSummary, reactionEmoji, nil, false, ddScan);
                     }
                 }
             } else {
@@ -1231,11 +1304,11 @@ NSMutableArray* vettedAliases;
                 } else if (item != nil) {
                     identifier = IMCreateThreadIdentifierForMessagePartChatItem(item);
                 }
-                createMessage(attributedString, subjectAttributedString, effectId, identifier, nil, nil, NSMakeRange(0, 0), nil, transfers, isAudioMessage, ddScan);
+                createMessage(attributedString, subjectAttributedString, effectId, identifier, nil, nil, NSMakeRange(0, 0), nil, nil, transfers, isAudioMessage, ddScan);
             }
         }];
     } else {
-        createMessage(attributedString, subjectAttributedString, effectId, nil, nil, nil, NSMakeRange(0, 0), nil, transfers, isAudioMessage, ddScan);
+        createMessage(attributedString, subjectAttributedString, effectId, nil, nil, nil, NSMakeRange(0, 0), nil, nil, transfers, isAudioMessage, ddScan);
     }
 }
 
