@@ -8,6 +8,7 @@
 
 @import AppKit;
 
+#import <objc/message.h>
 #import <Foundation/Foundation.h>
 #import <CoreSpotlight/CoreSpotlight.h>
 #import "BlueBubblesHelper.h"
@@ -630,9 +631,15 @@ NSMutableArray* vettedAliases;
         IMHandle *handle = [[[IMAccountController sharedInstance] activeIMessageAccount] imHandleWithID:(data[@"address"])];
         // Use reference to class since it doesn't exist on Big Sur
         Class cls = NSClassFromString(@"IMHandleAvailabilityManager");
+        // macOS 15 (Sequoia) dropped the leading underscore from the fetch selector.
+        SEL fetch = NSSelectorFromString(@"fetchUpdatedStatusForHandle:completion:");
+        if (cls != nil && ![cls instancesRespondToSelector:fetch]) {
+            fetch = NSSelectorFromString(@"_fetchUpdatedStatusForHandle:completion:");
+        }
         if (handle != nil && cls != nil) {
-            if ([cls instancesRespondToSelector:NSSelectorFromString(@"_fetchUpdatedStatusForHandle:completion:")]) {
-                [[cls sharedInstance] _fetchUpdatedStatusForHandle:(handle) completion:^() {
+            if ([cls instancesRespondToSelector:fetch]) {
+                void (*fetchStatus)(id, SEL, id, void (^)(void)) = (void (*)(id, SEL, id, void (^)(void)))objc_msgSend;
+                fetchStatus([cls sharedInstance], fetch, handle, ^() {
                     // delay for 1 second to ensure we have latest status
                     NSTimeInterval delayInSeconds = 1.0;
                     dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delayInSeconds * NSEC_PER_SEC));
@@ -644,7 +651,7 @@ NSMutableArray* vettedAliases;
                             [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"silenced": [NSNumber numberWithBool:silenced]}];
                         }
                     });
-                }];
+                });
             } else {
                 if (transaction != nil) {
                     [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"Selector not found!"}];
